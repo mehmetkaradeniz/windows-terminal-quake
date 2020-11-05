@@ -1,0 +1,1 @@
+MSBuild %1 /t:Rebuild /p:Configuration=Release /p:OutputPath=bin\Release
