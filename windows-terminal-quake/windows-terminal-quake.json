@@ -5,10 +5,6 @@
 		{
 			"Modifiers": "Control",
 			"Key": "OemTilde"
-		},
-		{
-			"Modifiers": "Control",
-			"Key": "Q"
 		}
 	],
 
@@ -17,10 +13,10 @@
 
 	// Make the window see-through (applies to the entire window, including the title bar).
 	// 0 (invisible) - 100 (opaque)
-	"Opacity": 80,
+	"Opacity": 90,
 
 	// How long the toggle up/down takes in milliseconds.
-	"ToggleDurationMs": 250,
+	"ToggleDurationMs": 256,
 
 	// How long each frame in the toggle animation takes in milliseconds.
 	// The lower this value, the smoother the animation, though values lower than 15 are not supported.
@@ -30,7 +26,7 @@
 	"VerticalOffset": 0,
 
 	// How far the terminal should come down, in percentage (eg. 50 = half way, 100 = full screen).
-	"VerticalScreenCoverage": 80,
+	"VerticalScreenCoverage": 100,
 
 	// When "HorizontalScreenCoverage" is below 100, this setting determines where the terminal is place horizontally.
 	// "Center", "Left" or "Right".
@@ -45,18 +41,7 @@
 	"HideOnFocusLost": true,
 
 	// Whether to keep the terminal window always on top (requires restart).
-	"AlwaysOnTop": false,
-
-	// Whether to hide the terminal window immediately after app start.
-	"StartHidden": false,
-
-	// What monitor to preferrably drop the terminal
-	// "WithCursor" (default), "Primary" or "AtIndex"
-	"PreferMonitor": "WithCursor",
-
-	// If "PreferMonitor" is set to "AtIndex", this setting determines what monitor to choose.
-	// Zero based, eg. 0, 1, etc.
-	"MonitorIndex": 1
+	"AlwaysOnTop": true
 
 	// # HotKeys
 	// ## Modifiers
