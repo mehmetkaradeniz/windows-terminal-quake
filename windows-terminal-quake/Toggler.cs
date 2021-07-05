@@ -2,42 +2,44 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Drawing;
-using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
-using System.Windows.Forms;
 using WindowsTerminalQuake.Native;
-using WindowsTerminalQuake.UI;
+using WindowsTerminalQuake.Settings;
+using WindowsTerminalQuake.TerminalBoundsProviders;
 
 namespace WindowsTerminalQuake
 {
 	public class Toggler : IDisposable
 	{
-		private Process _process => TerminalProcess.Get(_args);
+		private Process Process => TerminalProcess.Get(_args);
 
-		private string[] _args;
+		private readonly string[] _args;
 		private readonly List<int> _registeredHotKeys = new List<int>();
+
+		private readonly IAnimationTypeProvider _animTypeProvider = new AnimationTypeProvider();
+		private readonly IScreenBoundsProvider _scrBoundsProvider = new ScreenBoundsProvider();
+		private ITerminalBoundsProvider _termBoundsProvider = new ResizingTerminalBoundsProvider();
 
 		public Toggler(string[] args)
 		{
-			_args = args;
+			_args = args ?? Array.Empty<string>();
 
 			// Always on top
-			if (Settings.Instance.AlwaysOnTop) TopMostWindow.SetTopMost(_process);
+			if (QSettings.Instance.AlwaysOnTop) Process.SetAlwaysOnTop();
 
-			// Hide from taskbar
-			var windLong = User32.GetWindowLong(_process.MainWindowHandle, User32.GWL_EX_STYLE);
-			User32.ThrowIfError();
+			// Taskbar icon visibility
+			QSettings.Get(s =>
+			{
+				Process.ToggleTaskbarIconVisibility(s.TaskbarIconVisibility != TaskBarIconVisibility.AlwaysHidden);
+			});
 
-			User32.SetWindowLong(_process.MainWindowHandle, User32.GWL_EX_STYLE, (windLong | User32.WS_EX_TOOLWINDOW) & ~User32.WS_EX_APPWINDOW);
-
-			User32.Rect rect = default;
-			User32.ShowWindow(_process.MainWindowHandle, NCmdShow.MAXIMIZE);
-
+			// Used to keep track of the current toggle state.
+			// The terminal is always assumed to be open on app start.
 			var isOpen = true;
 
 			// Register hotkeys
-			Settings.Get(s =>
+			QSettings.Get(s =>
 			{
 				if (s.Hotkeys == null) return; // Hotkeys not loaded yet
 
@@ -52,10 +54,19 @@ namespace WindowsTerminalQuake
 				});
 			});
 
+			QSettings.Get(s =>
+			{
+				_termBoundsProvider = s.ToggleMode switch
+				{
+					ToggleMode.Move => new MovingTerminalBoundsProvider(),
+					_ => new ResizingTerminalBoundsProvider()
+				};
+			});
+
 			// Hide on focus lost
 			FocusTracker.OnFocusLost += (s, a) =>
 			{
-				if (Settings.Instance.HideOnFocusLost && isOpen)
+				if (QSettings.Instance.HideOnFocusLost && isOpen)
 				{
 					isOpen = false;
 					Toggle(false, 0);
@@ -65,173 +76,117 @@ namespace WindowsTerminalQuake
 			// Toggle on hotkey(s)
 			HotKeyManager.HotKeyPressed += (s, a) =>
 			{
-				Toggle(!isOpen, Settings.Instance.ToggleDurationMs);
+				if (FocusTracker.HotKeySuppressedForCurrentFocusedProcess())
+				{
+					return;
+				}
+
+				if (QSettings.Instance.DisableWhenActiveAppIsInFullscreen && ActiveWindowIsInFullscreen())
+				{
+					return;
+				}
+
 				isOpen = !isOpen;
+
+				Toggle(isOpen, QSettings.Instance.ToggleDurationMs);
 			};
 
 			// Start hidden?
-			if (Settings.Instance.StartHidden) Toggle(isOpen = false, 0);
+			if (QSettings.Instance.StartHidden) Toggle(isOpen = false, 0);
+			// Otherwise, call toggle once to setup the correct size and position
+			else Toggle(isOpen = true, 0);
 		}
 
 		public void Toggle(bool open, int durationMs)
 		{
-			// StepDelayMS needs to be at least 15, due to the resolution of Task.Delay()
-			var stepDelayMs = Math.Max(15, Settings.Instance.ToggleAnimationFrameTimeMs);
+			var animationFn = _animTypeProvider.GetAnimationFunction();
+			var frameTimeMs = QSettings.Instance.ToggleAnimationFrameTimeMs;
 
-			var stepCount = durationMs / stepDelayMs;
+			Log.Information(open ? "Open" : "Close");
 
-			var screen = GetScreenWithCursor();
+			// Notify focus tracker
+			if (open) FocusTracker.FocusGained(Process);
 
-			// Close
-			if (!open)
+			Process.BringToForeground();
+
+			var screen = _scrBoundsProvider.GetTargetScreenBounds();
+
+			// Used to accurately measure how far we are in the animation
+			var stopwatch = new Stopwatch();
+			stopwatch.Start();
+
+			// Run the open/close animation
+			while (stopwatch.ElapsedMilliseconds < durationMs)
 			{
-				Log.Information("Close");
+				var deltaMs = (float)stopwatch.ElapsedMilliseconds;
 
-				User32.ShowWindow(_process.MainWindowHandle, NCmdShow.RESTORE);
-				User32.SetForegroundWindow(_process.MainWindowHandle);
+				// Asynchronously start the timer for this frame (unless frameTimeMs is 0)
+				var frameTimer = (frameTimeMs == 0)
+					? new TaskAwaiter()
+					: Task.Delay(TimeSpan.FromMilliseconds(frameTimeMs)).GetAwaiter()
+				;
 
-				for (int i = stepCount - 1; i >= 0; i--)
+				// Render the next frame of animation
+				var linearProgress = open
+					? (deltaMs / durationMs)
+					: (1.0 - (deltaMs / durationMs))
+				;
+
+				var intermediateBounds = _termBoundsProvider.GetTerminalBounds(screen, animationFn(linearProgress));
+
+				Process.MoveWindow(bounds: intermediateBounds);
+
+				if (frameTimeMs > 0)
 				{
-					var bounds = GetBounds(screen, stepCount, i);
-
-					User32.MoveWindow(_process.MainWindowHandle, bounds.X, bounds.Y, bounds.Width, bounds.Height, true);
-					User32.ThrowIfError();
-
-					Task.Delay(TimeSpan.FromMilliseconds(stepDelayMs)).GetAwaiter().GetResult();
+					frameTimer.GetResult(); // Wait for the timer to end
 				}
-
-				// Minimize, so the last window gets focus
-				User32.ShowWindow(_process.MainWindowHandle, NCmdShow.MINIMIZE);
-
-				// Hide, so the terminal windows doesn't linger on the desktop
-				User32.ShowWindow(_process.MainWindowHandle, NCmdShow.HIDE);
 			}
-			// Open
+			stopwatch.Stop();
+
+			// To ensure sure we end up in exactly the correct final position
+			var finalBounds = _termBoundsProvider.GetTerminalBounds(screen, open ? 1.0 : 0.0);
+			Process.MoveWindow(bounds: finalBounds);
+
+			if (open)
+			{
+				// If vertical- and horizontal screen coverage is set to 100, maximize the window to make it actually fullscreen
+				if (QSettings.Instance.MaximizeAfterToggle && QSettings.Instance.VerticalScreenCoverage >= 100 && QSettings.Instance.HorizontalScreenCoverage >= 100)
+				{
+					Process.SetWindowState(WindowShowStyle.Maximize);
+				}
+			}
 			else
 			{
-				Log.Information("Open");
-				FocusTracker.FocusGained(_process);
+				// Minimize first, so the last window gets focus
+				Process.SetWindowState(WindowShowStyle.Minimize);
 
-				User32.ShowWindow(_process.MainWindowHandle, NCmdShow.RESTORE);
-				User32.SetForegroundWindow(_process.MainWindowHandle);
-
-				for (int i = 1; i <= stepCount; i++)
-				{
-					var bounds = GetBounds(screen, stepCount, i);
-					User32.MoveWindow(_process.MainWindowHandle, bounds.X, bounds.Y, bounds.Width, bounds.Height, true);
-					User32.ThrowIfError();
-
-					Task.Delay(TimeSpan.FromMilliseconds(stepDelayMs)).GetAwaiter().GetResult();
-				}
-
-				if (Settings.Instance.VerticalScreenCoverage >= 100 && Settings.Instance.HorizontalScreenCoverage >= 100)
-				{
-					User32.ShowWindow(_process.MainWindowHandle, NCmdShow.MAXIMIZE);
-				}
+				// Then hide, so the terminal windows doesn't linger on the desktop
+				if (QSettings.Instance.TaskbarIconVisibility == TaskBarIconVisibility.AlwaysHidden || QSettings.Instance.TaskbarIconVisibility == TaskBarIconVisibility.WhenTerminalVisible)
+					Process.SetWindowState(WindowShowStyle.Hide);
 			}
-		}
-
-		public Rectangle GetBounds(Screen screen, int stepCount, int step)
-		{
-			if (screen == null) throw new ArgumentNullException(nameof(screen));
-
-			var settings = Settings.Instance ?? throw new InvalidOperationException($"Settings.Instance was null");
-
-			var bounds = screen.Bounds;
-
-			var scrWidth = bounds.Width;
-			var horWidthPct = (float)settings.HorizontalScreenCoverage;
-
-			var horWidth = (int)Math.Ceiling(scrWidth / 100f * horWidthPct);
-			var x = 0;
-
-			switch (settings.HorizontalAlign)
-			{
-				case HorizontalAlign.Left:
-					x = bounds.X;
-					break;
-
-				case HorizontalAlign.Right:
-					x = bounds.X + (bounds.Width - horWidth);
-					break;
-
-				case HorizontalAlign.Center:
-				default:
-					x = bounds.X + (int)Math.Ceiling(scrWidth / 2f - horWidth / 2f);
-					break;
-			}
-
-			bounds.Height = (int)Math.Ceiling((bounds.Height / 100f) * settings.VerticalScreenCoverage);
-			bounds.Height += settings.VerticalOffset;
-
-			return new Rectangle(
-				x,
-				bounds.Y + -bounds.Height + (bounds.Height / stepCount * step) + settings.VerticalOffset,
-				horWidth,
-				bounds.Height
-			);
 		}
 
 		public void Dispose()
 		{
-			ResetTerminal(_process);
+			Process.ResetBounds();
+			Process.ToggleTaskbarIconVisibility(true);
 		}
 
-		private static Screen GetScreenWithCursor()
+		private static bool ActiveWindowIsInFullscreen()
 		{
-			var settings = Settings.Instance;
-			if (settings == null) return Screen.PrimaryScreen; // Should not happen
+			IntPtr fgWindow = User32.GetForegroundWindow();
+			User32.Rect appBounds = new User32.Rect();
+			User32.Rect screen = new User32.Rect();
+			User32.GetWindowRect(User32.GetDesktopWindow(), ref screen);
 
-			var scr = Screen.AllScreens;
-
-			switch (settings.PreferMonitor)
+			if (fgWindow != User32.GetDesktopWindow() && fgWindow != User32.GetShellWindow())
 			{
-				// At Index
-				case PreferMonitor.AtIndex:
-					// Make sure the monitor index is within bounds
-					if (settings.MonitorIndex < 0)
-					{
-						TrayIcon.Instance.Notify(ToolTipIcon.Warning, $"Setting '{nameof(Settings.Instance.MonitorIndex)}' must be greater than or equal to 0.");
-						return Screen.PrimaryScreen;
-					}
-
-					if (settings.MonitorIndex >= scr.Length)
-					{
-						TrayIcon.Instance.Notify(ToolTipIcon.Warning, $"Setting '{nameof(Settings.Instance.MonitorIndex)}' ({settings.MonitorIndex}) must be less than the monitor count ({scr.Length}).");
-						return Screen.PrimaryScreen;
-					}
-
-					return scr[settings.MonitorIndex];
-
-				// Primary
-				case PreferMonitor.Primary:
-					return Screen.PrimaryScreen;
-
-				// With Cursor
-				default:
-				case PreferMonitor.WithCursor:
-					return Screen.AllScreens
-						.FirstOrDefault(s => s.Bounds.Contains(Cursor.Position))
-						?? Screen.PrimaryScreen
-					;
+				if (User32.GetWindowRect(fgWindow, ref appBounds))
+				{
+					return appBounds.Equals(screen);
+				}
 			}
-		}
-
-		private static void ResetTerminal(Process process)
-		{
-			var bounds = GetScreenWithCursor().Bounds;
-
-			// Restore taskbar icon
-			var windLong = User32.GetWindowLong(process.MainWindowHandle, User32.GWL_EX_STYLE);
-			User32.ThrowIfError();
-			User32.SetWindowLong(process.MainWindowHandle, User32.GWL_EX_STYLE, (windLong | User32.WS_EX_TOOLWINDOW) & User32.WS_EX_APPWINDOW);
-
-			// Reset position
-			User32.MoveWindow(process.MainWindowHandle, bounds.X, bounds.Y, bounds.Width, bounds.Height, true);
-			User32.ThrowIfError();
-
-			// Restore window
-			User32.ShowWindow(process.MainWindowHandle, NCmdShow.MAXIMIZE);
+			return false;
 		}
 	}
 }

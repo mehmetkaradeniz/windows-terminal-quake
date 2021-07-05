@@ -39,7 +39,7 @@ namespace WindowsTerminalQuake.UI {
         internal static global::System.Resources.ResourceManager ResourceManager {
             get {
                 if (object.ReferenceEquals(resourceMan, null)) {
-                    global::System.Resources.ResourceManager temp = new global::System.Resources.ResourceManager("windows-terminal-quake.UI._Resources", typeof(_Resources).Assembly);
+                    global::System.Resources.ResourceManager temp = new global::System.Resources.ResourceManager("WindowsTerminalQuake.UI._Resources", typeof(_Resources).Assembly);
                     resourceMan = temp;
                 }
                 return resourceMan;
@@ -67,6 +67,24 @@ namespace WindowsTerminalQuake.UI {
             get {
                 object obj = ResourceManager.GetObject("icon", resourceCulture);
                 return ((System.Drawing.Icon)(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to {
+        ///	&quot;$schema&quot;: &quot;./windows-terminal-quake.schema.1.json&quot;,
+        ///
+        ///	// If your editor supports it, this file should be editable with auto-completion through the included JSON schema.
+        ///	// Also, see https://flyingpie.github.io/windows-terminal-quake/ for more information.
+        ///	// Please report bugs and/or feature requests at https://github.com/flyingpie/windows-terminal-quake/issues.
+        ///
+        ///	////////////////////////////////////////////////////////////////////////////////////
+        ///	/// Hotkeys &amp; Suppression
+        ///	///////////////// [rest of string was truncated]&quot;;.
+        /// </summary>
+        internal static string windows_terminal_quake {
+            get {
+                return ResourceManager.GetString("windows_terminal_quake", resourceCulture);
             }
         }
     }

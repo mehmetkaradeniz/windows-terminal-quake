@@ -3,13 +3,38 @@ using Polly.Retry;
 using Serilog;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
+using WindowsTerminalQuake.Settings;
 
 namespace WindowsTerminalQuake.Native
 {
+	/// <summary>
+	/// Wrapper around the Windows Terminal process. Contains stuff to actually capture the process,
+	/// which turns out to be tricky in some cases.
+	/// </summary>
 	public static class TerminalProcess
 	{
+		/// <summary>
+		/// Returns the instance of the running Windows Terminal. Creates one if none is running yet.
+		/// </summary>
+		/// <param name="args">Any command-line arguments to pass to the terminal process if we're starting it.</param>
+		public static Process Get(string[] args)
+		{
+			return Retry.Execute(() =>
+			{
+				if (_isExitting) return _process!;
+
+				if (_process == null || _process.HasExited)
+				{
+					_process = GetOrCreate(args);
+				}
+
+				return _process;
+			});
+		}
+
 		private static readonly RetryPolicy Retry = Policy
 			.Handle<Exception>()
 			.WaitAndRetry(new[]
@@ -40,25 +65,9 @@ namespace WindowsTerminalQuake.Native
 			_onExit.ForEach(a => a());
 		}
 
-		public static Process Get(string[] args)
-		{
-			return Retry.Execute(() =>
-			{
-				if (_isExitting) return _process!;
-
-				if (_process == null || _process.HasExited)
-				{
-					_process = GetOrCreate(args);
-				}
-
-				return _process;
-			});
-		}
-
 		private static Process GetOrCreate(string[] args)
 		{
 			const string existingProcessName = "WindowsTerminal";
-			const string newProcessName = "wt.exe";
 
 			var process = Process.GetProcessesByName(existingProcessName).FirstOrDefault();
 			if (process == null)
@@ -67,15 +76,21 @@ namespace WindowsTerminalQuake.Native
 				{
 					StartInfo = new ProcessStartInfo
 					{
-						FileName = newProcessName,
+						FileName = QSettings.Instance.WindowsTerminalCommand,
 						Arguments = string.Join(" ", args),
-						UseShellExecute = false,
-						WindowStyle = ProcessWindowStyle.Maximized
+						UseShellExecute = false
 					}
 				};
 
-				process.Start();
-				process.WaitForInputIdle();
+				try
+				{
+					process.Start();
+					process.WaitForInputIdle();
+				}
+				catch (Win32Exception ex) when (ex.Message == "The system cannot find the file specified")
+				{
+					throw new Exception($"Could not find the Windows Terminal exe at '{QSettings.Instance.WindowsTerminalCommand}'. Make sure it is installed, and see '{nameof(QSettings.Instance.WindowsTerminalCommand)}' setting for more information.");
+				}
 
 				// After starting the process, just throw an exception so the process search gets restarted.
 				// The "wt.exe" process does some stuff to ultimately fire up a "WindowsTerminal" process, so we can't actually use the Process instance we just created.
@@ -94,14 +109,14 @@ namespace WindowsTerminalQuake.Native
 
 			// Make sure we can access the main window handle
 			// Note: Accessing mainWindowHandle already throws "Process has exited, so the requested information is not available."
-			if (process.MainWindowHandle == IntPtr.Zero) throw new Exception("Main window handle no accessible.");
+			if (process.MainWindowHandle == IntPtr.Zero) throw new Exception("Main window handle not accessible.");
 
 			// Make sure the process name equals "WindowsTerminal", otherwise WT might still be starting
 			if (process.ProcessName != "WindowsTerminal") throw new Exception("Process name is not 'WindowsTerminal' yet.");
 
 			// We need a proper window title before we can continue
 			if (process.MainWindowTitle == "")
-				throw new Exception($"Process still has temporary '' window title.");
+				throw new Exception($"Process still has temporary '' (empty) window title.");
 
 			// This is a way-too-specific check to further ensure the WT process is ready
 			if (process.MainWindowTitle == "DesktopWindowXamlSource")
